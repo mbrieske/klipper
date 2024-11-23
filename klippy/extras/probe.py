@@ -257,8 +257,11 @@ class ProbeSessionHelper:
                                                'average')
         self.samples_tolerance = config.getfloat('samples_tolerance', 0.100,
                                                  minval=0.)
-        self.samples_retries = config.getint('samples_tolerance_retries', 0,
-                                             minval=0)
+        self.samples_retries = config.getint('samples_tolerance_retries', 0, 
+                                                 minval=0)
+        self.y_bias_front = config.getfloat('y_bias_front', 0.)
+        self.printer_y_max = config.getsection('stepper_x').getfloat('position_max')        
+
         # Session state
         self.multi_probe_pending = False
         self.results = []
@@ -307,6 +310,7 @@ class ProbeSessionHelper:
                 'samples_tolerance': samples_tolerance,
                 'samples_tolerance_retries': samples_retries,
                 'samples_result': samples_result}
+    
     def _probe(self, speed):
         toolhead = self.printer.lookup_object('toolhead')
         curtime = self.printer.get_reactor().monotonic()
@@ -321,6 +325,11 @@ class ProbeSessionHelper:
             if "Timeout during endstop homing" in reason:
                 reason += HINT_TIMEOUT
             raise self.printer.command_error(reason)
+        
+
+        delta_z = self.y_bias_front * (1 - (epos[1] / self.printer_y_max))
+        epos = (epos[0], epos[1], epos[2] + delta_z)
+       
         # Allow axis_twist_compensation to update results
         self.printer.send_event("probe:update_results", epos)
         # Report results
@@ -328,6 +337,7 @@ class ProbeSessionHelper:
         gcode.respond_info("probe at %.3f,%.3f is z=%.6f"
                            % (epos[0], epos[1], epos[2]))
         return epos[:3]
+
     def run_probe(self, gcmd):
         if not self.multi_probe_pending:
             self._probe_state_error()
@@ -485,13 +495,36 @@ class ProbePointsHelper:
         self._manual_probe_start()
 
 # Helper to obtain a single probe measurement
+#def run_single_probe(probe, gcmd):
+#    probe_session = probe.start_probe_session(gcmd)
+#    probe_session.run_probe(gcmd)
+#    pos = probe_session.pull_probed_results()[0]
+#    probe_session.end_probe_session()
+#    return pos
+# Helper to obtain a single probe measurement with Z adjustment based on Y
 def run_single_probe(probe, gcmd):
     probe_session = probe.start_probe_session(gcmd)
     probe_session.run_probe(gcmd)
     pos = probe_session.pull_probed_results()[0]
+    
+    # Extract the Y-coordinate
+    y = pos[1]
+    
+    # Calculate the Z adjustment
+    if 0 <= y <= 120:
+        delta_z = 5.0 * (1 - y / 120.0)  # Linearly fade from 0.5mm to 0mm
+    elif y < 0:
+        delta_z = 5.0  # If Y is below 0, apply the maximum adjustment
+    else:
+        delta_z = 0.0  # No adjustment beyond Y=120mm
+    
+    # Apply the Z adjustment
+    pos = list(pos)  # Convert tuple to list for mutability
+    pos[2] += delta_z
+    pos = tuple(pos)  # Convert back to tuple if necessary
+    
     probe_session.end_probe_session()
     return pos
-
 
 ######################################################################
 # Handle [probe] config
